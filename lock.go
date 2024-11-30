@@ -3,6 +3,7 @@ package distributedlock
 import (
 	"context"
 	"errors"
+	"math/rand"
 	"sync/atomic"
 	"time"
 
@@ -32,6 +33,11 @@ const checkAndExtenExpiration = `
 		return redis.call('expire',lockerKey,duration)
   end
 `
+
+const (
+	minRetryDelayMilliSec = 50
+	maxRetryDelayMilliSec = 250
+)
 
 // DistributedLock 分布式锁接口
 type DistributedLock interface {
@@ -85,7 +91,7 @@ func (r *redisLock) Lock(key string) (err error) {
 		return errors.New("lock failed")
 	}
 
-	_, err = r.keepTryingLock(key)
+	err = r.keepTryingLock(key)
 	if err != nil {
 		return err
 	}
@@ -107,27 +113,32 @@ func (r *redisLock) tryToLock(key string) (bool, error) {
 }
 
 // keepTryingLock 不断尝试加锁
-func (r *redisLock) keepTryingLock(key string) (bool, error) {
+func (r *redisLock) keepTryingLock(key string) error {
+	delayFunc := func() time.Duration {
+		return time.Duration(rand.Intn(maxRetryDelayMilliSec-minRetryDelayMilliSec)+minRetryDelayMilliSec) * time.Millisecond
+	}
 	timeOut := time.After(10 * time.Second)
-	ticker := time.NewTicker(time.Duration(50) * time.Millisecond)
-	for range ticker.C {
+	timer := time.NewTimer(delayFunc())
+	for {
 		select {
+		case <-timer.C:
+			// 尝试加锁一次
+			isLock, err := r.tryToLock(key)
+			if err != nil {
+				return err
+			}
+
+			if isLock {
+				return nil
+			}
+			// 加锁失败重置定时器，防止再次加锁冲突
+			timer.Reset(delayFunc())
 		case <-timeOut:
-			// 超时未加锁成功则报错
-			return false, errors.New("try to lock time out")
+			// 加锁超时，抛错
+			return errors.New("try to lock time out")
 		default:
 		}
-		// 尝试加锁一次
-		isLock, err := r.tryToLock(key)
-		if err != nil {
-			return false, err
-		}
-
-		if isLock {
-			return true, nil
-		}
 	}
-	return true, nil
 }
 
 // runWatchDog 执行看门狗
