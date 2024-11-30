@@ -18,7 +18,7 @@ var (
 func NewRedis(ip, password string, port int) *redis.Client {
 	rOnce.Do(func() {
 		ctx := context.Background()
-		addr := ip + strconv.Itoa(port)
+		addr := ip + ":" + strconv.Itoa(port)
 		// 创建 Redis 客户端
 		r = redis.NewClient(&redis.Options{
 			Addr:     addr,     // Redis 服务器地址
